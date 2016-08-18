@@ -1,18 +1,23 @@
 #include "postgres.h"
 #include "executor/spi.h"
 #include "fmgr.h"
+#include "khash.h"
 #include <utils/array.h>
 #include <math.h>
 #include <utils/lsyscache.h>
 #include <utils/builtins.h>
+#include <catalog/pg_type.h>
 #include <string.h>
+#include <stdio.h>
 
 PG_MODULE_MAGIC;
 
+/* external functions to be called by SQL statements */
 Datum seg2pt_c(PG_FUNCTION_ARGS) ;
 Datum gcode_c(PG_FUNCTION_ARGS) ;
 Datum maxdis_c(PG_FUNCTION_ARGS) ;
 Datum simpl_c(PG_FUNCTION_ARGS) ;
+Datum wquery_c(PG_FUNCTION_ARGS) ;
 
 /* internal functions that only called by functions in this file */
 float seg2pt(double x1, double y1, double x2, double y2, double x3, double y3) ;
@@ -22,6 +27,15 @@ int lc(char * c, char * p) ;
 int rc(char * c, char * p) ;
 float simpl(long nids[], int lons[], int lats[], int i, int j, char path[], float p, float errors[], char* paths[], int sizes[], char* tiles[]) ;
 int arborway(long cur_way_id, long ids[], float errors[], char* paths[], int sizes[], char* tiles[], int num) ;
+
+/* Initialization of the khash related functions */
+KHASH_SET_INIT_STR(str)
+KHASH_SET_INIT_STR(path)
+KHASH_SET_INIT_INT64(nid)
+
+int get_ancestors(char * npath, khash_t(path) * hpath) ;
+int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * h, char *ptiles[]) ;
+ArrayType * iinids2array(khash_t(nid) * hnid, long *nids, int nidlen) ;
 
 /*
 	 distance from a line segment to a point
@@ -334,18 +348,25 @@ Datum simpl_c(PG_FUNCTION_ARGS) {
 		 insert the 2 endpoint of the way as path '0' and 't'
 */	
 int arborway(long cur_way_id, long ids[], float errors[], char* paths[], int sizes[], char* tiles[], int num) {
-	int i, ret_ins, ret;
-	char * stmnt_prefix = "insert into way_trees(way_id, node_id, error, path, subsize, tile) values (";
+	int i, ret_ins, ret_ins2, ret;
+	char * stmnt_prefix = "insert into way_trees(way_id, node_id, error, path, subsize) values (";
 	char stmnt[160];
+
+	char * updatetpl = "update node_vis_errors set error = %f , tile = \'%s\' where node_id = %lu and error < %f" ;
+	char updatestm[160];
+
 
 	ret = 0;
 
 	for (i = 0 ; i < num ; i++) {
 		memset (stmnt, 0, 160);
-		sprintf(stmnt, "%s %lu, %lu, %f, \'%s\', %u,\'%s\')", stmnt_prefix, cur_way_id, ids[i], errors[i], paths[i], sizes[i], tiles[i]);
+		sprintf(stmnt, "%s %lu, %lu, %f, \'%s\', %u)", stmnt_prefix, cur_way_id, ids[i], errors[i], paths[i], sizes[i]);
+		sprintf(updatestm, updatetpl, errors[i], tiles[i], ids[i], errors[i]);
 
 		ret_ins = SPI_exec(stmnt, 0);
-		if (ret_ins < 0) {
+		ret_ins2 = SPI_exec(updatestm, 0);
+		
+		if (ret_ins < 0 || ret_ins2 < 0) {
 			ret = -1;
 		}
 	}
@@ -445,4 +466,352 @@ int rc(char * c, char * p) {
 	if ((int)(c[plen - 1]) % 2 == 1) c[plen] = 'T';
 	c[9] = 0;
 	return 0;
+}
+
+PG_FUNCTION_INFO_V1(wquery_c);
+/*
+	the parameters is the coordinates of the leftbottom and topright point of the querying window
+
+*/
+Datum wquery_c(PG_FUNCTION_ARGS) {
+	double wx1, wy1, wx2, wy2;
+	khash_t(str) * h;
+	khash_t(path) * hpath;
+	khash_t(nid) * hnid;
+	int i, j, ret, proc, ind, abs, count, hnidlen;
+	unsigned wx1uint, wy1uint, wx2uint, wy2uint;
+
+	char * pre_stmt = "select way_id, node_id, path from way_trees where node_id in (select cn.id from (select node_id from node_vis_errors nve where tile in (%s)) nve inner join current_nodes cn on cn.id = nve.node_id and cn.longitude >= %d and cn.longitude <= %d and cn.latitude >= %d and cn.latitude <= %d) order by way_id, path;";
+	char stmnt[1500] ;
+	char tilestr[1024];
+
+	long * wids, * nids;
+	char ** paths, * tiles[80];
+	ArrayType * retarr;
+	Datum * vals ;
+
+	/* for debug purpose */
+	FILE * fdd = fopen("/tmp/wquery.txt", "a");
+	char ttstr[16];
+
+	/* get the coordinates of the window  */
+	wx1 = PG_GETARG_FLOAT8(0);
+	wy1 = PG_GETARG_FLOAT8(1);
+	wx2 = PG_GETARG_FLOAT8(2);
+	wy2 = PG_GETARG_FLOAT8(3);
+
+	/* initialization of 3 hash sets
+		1. for tiles conditions
+		2. for paths of ancestors of a way's directly included nodes
+		3. for id of indirectly included nodes
+		*/
+	h = kh_init(str);
+	hpath = kh_init(path);
+	hnid = kh_init(nid);
+
+	/* from window to tiles conditions  */
+	window2tiles(wx1, wy1, wx2, wy2, h, tiles);
+
+	/* from tiles condition to directly included nodes, ways and relations */
+	/* tiles2dinids(wx1, wy1, wx2, wy2, h, &wids, &nids, &paths);  */
+
+	/* from directly included nodes into indirectly included nodes using way_trees and relation_trees */
+	/* dinids2iinids(h, wids, nids, paths, hpath, hnid); */
+		
+	wx1uint = wx1 * 10000000;
+	wy1uint = wy1 * 10000000;
+	wx2uint = wx2 * 10000000;
+	wy2uint = wy2 * 10000000;
+
+	/* Initialize char string for database querying */
+	memset((void *)stmnt, 0, 1500 * sizeof(char));
+	memset((void *)tilestr, 0, 1024 * sizeof(char));
+
+	ind = 0;
+	for (i = kh_begin(h) ; i != kh_end(h); ++i) {
+		if (kh_exist(h, i)) {
+			if (0 == ind) {
+				ind = sprintf (tilestr, "\'%s\'", kh_key(h, i));
+			} else {
+				ind += sprintf (&tilestr[ind], ",\'%s\'", kh_key(h, i));
+			}
+		}
+	}
+	
+	sprintf(stmnt, pre_stmt, tilestr, wx1uint, wx2uint, wy1uint, wy2uint);
+	/* begin to query the database to retrieve the data */
+	SPI_connect();
+
+	/* for debug purpose */
+	if (fdd != NULL) {
+		fputs (stmnt, fdd);
+		fputs ("\n", fdd);
+	}
+
+	ret = SPI_execute(stmnt, true, 0);
+
+	proc = SPI_processed;
+
+	/* for an empty results */
+	if (0 == proc) {
+		SPI_finish();
+		PG_RETURN_ARRAYTYPE_P(construct_empty_array(INT8OID));
+	}
+
+	/* for debug purpose */
+	if (fdd != NULL) {
+		sprintf(ttstr, "Proc = %u\n",proc);
+		fputs (ttstr, fdd);
+	}
+
+	/* allocate the memory for the results */
+	wids = palloc0((proc + 1) * sizeof(long));
+	nids = palloc0((proc + 1) * sizeof(long));
+	paths = palloc0((proc + 1) * sizeof(char *));
+
+	/* read out the actual data */
+	if (ret > 0 && SPI_tuptable != NULL) {
+		TupleDesc tupdesc = SPI_tuptable->tupdesc;
+		SPITupleTable * tuptable = SPI_tuptable;
+		long wid = 0, pre_wid = 0, nid;
+		char *npath, * pathstr = 0 ;
+		int path_con_len = 0, ret2, proc2 ;
+		char * path2id_tpl = "select node_id from way_trees where way_id = %lu and path in (%s)"; 
+		char * path2id = 0;
+		char ttstr2[80];
+
+		/* copy the data retrieved from table into arrays  */
+		for (i = 0 ; i < proc; i++) {
+			HeapTuple tuple = tuptable->vals[i];
+			
+			wid = atol(SPI_getvalue(tuple, tupdesc, 1));
+			nid = atol(SPI_getvalue(tuple, tupdesc, 2));
+			npath = SPI_getvalue(tuple, tupdesc, 3);
+
+			wids[i] = wid;
+			nids[i] = nid;
+			paths[i] = npath;
+		}
+
+		/* sentinel for the last actual way to be processed */
+		wids[proc] = 0;
+		nids[proc] = nids[0];
+		paths[proc] = paths[0];
+
+		/* extend each way's nodes from directly included nodes to indirectly included nodes */
+		for (i = 0 ; i <= proc; i++) {
+			
+			wid = wids[i];
+			nid = nids[i];
+			npath = paths[i];
+
+			/* for debug purpose */
+			if (fdd != NULL) {
+				sprintf(ttstr2, "%ld, %ld, %s \n", wid, nid, npath);
+				fputs(ttstr2, fdd);
+			}
+
+			/* get the node's parents path */
+			if ((pre_wid != wid) && (pre_wid != 0)) {
+
+					ind = 0;
+					/* free old pathst and allocate new one  */
+					if (pathstr != 0) {
+						pfree(pathstr);
+						pathstr = 0;
+					}
+					path_con_len = kh_size(hpath);
+					if (path_con_len > 0) {
+						pathstr = palloc0(path_con_len * 16 + 16);
+
+						/* include opening-endpoint and closing-endpoint path */
+						ind += sprintf(pathstr, "\'%s\',\'%s\'", "0", "t");
+
+						for (j = kh_begin(hpath) ; j != kh_end(hpath) ; j++) {
+							if (kh_exist(hpath, j)) {
+								ind += sprintf(&pathstr[ind], ",\'%s\'", kh_key(hpath, j));
+							}
+						}
+
+						/* select the node_ids from the paths  */
+						path2id = palloc0((80 + path_con_len) * sizeof(char));
+						sprintf(path2id, path2id_tpl, pre_wid, pathstr);
+
+						/* for debug purpose */
+						if (fdd != NULL) {
+							fputs (path2id, fdd);
+							fputs ("\n", fdd);
+						}
+
+						ret2 = SPI_execute(path2id, true, 0);
+						proc2 = SPI_processed;
+
+						/* collect the way_trees node's necessary parents into hashset  */
+						if (ret2 > 0 && SPI_tuptable != NULL) {
+							TupleDesc tupdesc = SPI_tuptable->tupdesc;
+							SPITupleTable * tuptable = SPI_tuptable;
+							long wtnid  = 0;
+
+							for (j = 0 ; j < proc2 ; j++) {
+								HeapTuple tuple = tuptable->vals[j];
+
+								wtnid = atol(SPI_getvalue(tuple, tupdesc, 1));
+								kh_put(nid, hnid, wtnid, &abs);
+							}
+						}
+						
+						/* reinitialize all the temp variable */
+						kh_clear(path, hpath);
+					}
+				}
+
+				pre_wid = wid;
+				get_ancestors(npath, hpath);
+		}
+	}
+
+	/* free the allocated memories */
+	kh_clear(str, h);
+	kh_clear(path, hpath);
+
+	//construct the array to be returned
+
+	for (i = 0 ; i < proc ; ++i) {
+		kh_put(nid, hnid, nids[i], &abs);
+	}
+
+	hnidlen = kh_size(hnid);
+	vals = palloc0(sizeof(Datum) * hnidlen);
+	count = 0;
+
+	//a line to indicate the start of the result ids
+	fputs ("start of the result ids\n", fdd);
+
+	for (i = kh_begin(hnid) ; i != kh_end(hnid) ; ++i) {
+		if (kh_exist(hnid, i)) {
+			vals[count++] = Int64GetDatum(kh_key(hnid, i));
+			/* for debug purpose */
+			if (fdd != NULL) {
+				sprintf(ttstr, "%ld\n", kh_key(hnid, i));
+				fputs (ttstr, fdd);
+			}
+		}
+	}
+
+	retarr = construct_array(vals, hnidlen, INT8OID, sizeof(long), true, 'i');
+
+	/* return the all directly and indirectly included nodes as response */
+	//retarr = iinids2array(hnid, nids, proc);
+
+	/* for debug purpose */
+	if (fdd != NULL) {
+		fclose(fdd);
+	}
+
+	SPI_finish();
+
+	//free the memoried used in h
+	for (i = 0 ; i < 80 ; ++i) {
+		pfree(tiles[i]);
+	}
+
+	PG_RETURN_ARRAYTYPE_P(retarr);
+	//PG_RETURN_ARRAYTYPE_P(construct_empty_array(INT8OID));
+}
+
+/* get ancestors of way_trees or relation_trees and store it into a hashset */
+	//TODO: caution with the memory managment
+int get_ancestors(char * npath, khash_t(path) * hpath) {
+	char ancestor_table[63][5] = {"68<DT","8<DTz", "68<DT", "<DTzz", ":8<DT", "8<DTz",  ":8<DT", "DTzzz", ">@<DT", "@<DTz", ">@<DT", "<DTzz", "B@<DT", "@<DTz", "B@<DT", "Tzzzz", "FHLDT", "HLDTz", "FHLDT", "LDTzz", "JHLDT", "HLDTz", "JHLDT", "DTzzz", "NPLDT", "PLDTz", "NPLDT", "LDTzz", "RPLDT", "PLDTz", "RPLDT", "zzzzz", "VX\\dT", "X\\dTz", "VX\\dT", "\\dTzz", "ZX\\dT", "X\\dTz", "ZX\\dT", "dTzzz", "^`\\dT", "`\\dTz", "^`\\dT", "\\dTzz", "b`\\dT", "`\\dTz", "b`\\dT", "Tzzzz", "fhldT", "hldTz", "fhldT", "ldTzz", "jhldT", "hldTz", "jhldT", "dTzzz", "npldT", "pldTz", "npldT", "ldTzz", "rpldT", "pldTz", "rpldT"} ;
+	char ch ;
+	int i = 0, len = 0, j = 0, ind = 0, abs = 0, cnt = 0 ;
+	char * prefix = palloc0(9 * sizeof(char));
+	char * tmp;
+
+	/* initialization of variables */
+	len = strlen(npath);
+	for (i = 0 ; i < len ; i++) {
+		ch = npath[i];
+		ind = ch - 53;
+		if (ind < 0 || ind >= 63) return 0;
+		for (j = 4 ; j >= 0 ; j--) {
+			prefix[i] = ancestor_table[ind][j];
+			prefix[i + 1] = 0;
+			if (prefix[i] != 'z' ) {
+				kh_put(path, hpath, prefix, &abs);
+				if (abs) {
+					tmp = prefix;
+					prefix = palloc0(9 * sizeof(char));
+					strcpy(prefix, tmp);
+				}
+				cnt += 1;
+			} 
+		}
+		prefix[i] = ch;
+		if (ind % 2 > 0) break;
+	}
+	return cnt;
+}
+
+/* calculate the tiles from window   */
+int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * h, char * tiles[]) {
+	double xspn, yspn, spn, tole;
+	int i, abs;
+
+	/* get the major span of the window */
+	xspn = wx2 - wx1 ;
+	yspn = wy2 - wy1 ;
+
+	if (xspn > yspn) {
+		spn = xspn ;
+	} else {
+		spn = yspn ;
+	}
+
+	tole = spn / 2048.0 * 3.0;
+	for (i = 0 ; i < 80 ; i++) {
+		tiles[i] = palloc0(9 * sizeof(char));
+	}
+
+	i = 0;
+	while (tole < 0.55) {
+		gcode(wx1, wy1, tole, tiles[i]);
+		gcode(wx1, wy2, tole, tiles[i + 1]);
+		gcode(wx2, wy2, tole, tiles[i + 2]);
+		gcode(wx2, wy1, tole, tiles[i + 3]);
+
+		kh_put(str, h, tiles[i], &abs);
+		kh_put(str, h, tiles[i + 1], &abs);
+		kh_put(str, h, tiles[i + 2], &abs);
+		kh_put(str, h, tiles[i + 3], &abs);
+		
+		tole = tole * 2;
+		i = i + 4;
+	}
+	
+	return i;
+}
+
+ArrayType * iinids2array(khash_t(nid) * hnid, long *nids, int nidlen) {
+	ArrayType * retarr ;
+	int hnidlen = 0, count, i, abs;
+	Datum * vals ;
+
+	for (i = 0 ; i < nidlen ; ++i) {
+		//vals[count++] = Int64GetDatum(nids[i]);
+		kh_put(nid, hnid, nids[i], &abs);
+	}
+
+	hnidlen = kh_size(hnid);
+	vals = palloc0(sizeof(Datum) * hnidlen);
+	count = 0;
+
+	for (i = kh_begin(hnid) ; i != kh_end(hnid) ; ++i) {
+		if (kh_exist(hnid, i)) vals[count++] = Int64GetDatum(kh_key(hnid, i));
+	}
+
+
+	retarr = construct_array(vals, hnidlen + nidlen, INT8OID, sizeof(long), true, 'i');
+
+	return retarr;
 }

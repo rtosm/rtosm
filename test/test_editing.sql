@@ -1,4 +1,35 @@
 
+--------------------------- test case 1 --------------------------------------
+
+create or replace function testcase1() returns integer AS $$
+DECLARE
+
+	retval INTEGER := 0;
+
+BEGIN
+	-- test seq_insertion
+	retval = test_way_editing1();
+	retval = test_way_editing2();
+	retval = test_way_editing3();
+	retval = test_way_editing_close();
+	
+	-- test seq_replace
+	retval = test_way_rep1();
+	retval = test_way_rep2();
+	retval = test_way_rep3();
+	retval = test_way_rep_close();
+	
+	-- test seq_deletion
+	retval = test_way_del1();
+	retval = test_way_del2();
+
+	return 0;
+END;
+$$ LANGUAGE PLPGSQL;
+
+
+--------------------------- test case 1 --------------------------------------
+
 -- test case for seq_insertion
 create or replace function test_way_editing1() returns integer AS $$
 DECLARE
@@ -50,7 +81,7 @@ BEGIN
 			mtile = gcode_c(mnode.longitude / 10000000.0, mnode.latitude / 10000000.0, m_dis);
 
 			new_way_id = ids[i] + id_offset;
-			insert into way_trees (way_id, node_id, error, path, subsize, tile) values (new_way_id, mnode.id, m_dis, 'T', 1, mtile);
+			insert into way_trees (way_id, node_id, error, path, subsize) values (new_way_id, mnode.id, m_dis, 'T', 1);
 
 			cur_way_dis = pt2pt(snode.longitude / 10000000.0, snode.latitude / 10000000.0, enode.longitude / 10000000.0, enode.latitude / 10000000.0);
 
@@ -61,8 +92,8 @@ BEGIN
 			stile = gcode_c(snode.longitude / 10000000.0, snode.latitude / 10000000.0, cur_way_dis);
 			etile = gcode_c(enode.longitude / 10000000.0, enode.latitude / 10000000.0, cur_way_dis);
 
-			insert into way_trees (way_id, node_id, error, path, subsize, tile) values (new_way_id, snode.id, cur_way_dis, '0', 3, stile);
-			insert into way_trees (way_id, node_id, error, path, subsize, tile) values (new_way_id, enode.id, cur_way_dis, 't', 3, etile);
+			insert into way_trees (way_id, node_id, error, path, subsize) values (new_way_id, snode.id, cur_way_dis, '0', 3);
+			insert into way_trees (way_id, node_id, error, path, subsize) values (new_way_id, enode.id, cur_way_dis, 't', 3);
 
 		end if;
 		i = i + 1;
@@ -232,7 +263,7 @@ BEGIN
 
 	w_num = array_length(ids, 1);
 	while i <= w_num loop
-		insert into way_trees (way_id, node_id, error, path, subsize, tile) (select ids[i] + id_offset, node_id, error, path, subsize, tile from way_trees where way_id = ids[i]);
+		insert into way_trees (way_id, node_id, error, path, subsize) (select ids[i] + id_offset, node_id, error, path, subsize from way_trees where way_id = ids[i]);
 		i = i + 1;
 	end loop;
 	return 0;
@@ -303,11 +334,7 @@ BEGIN
 				ret_tree = seq_replace(new_way_id, snode.id, mnode.id, seq_ins1);
 			end if;
 
-		end if;
-		i = i + 1;
-	end loop;
-
-	return 0;
+		end if; i = i + 1; end loop; return 0;
 END;
 $$ LANGUAGE PLPGSQL;
 
@@ -496,7 +523,7 @@ BEGIN
 
 	w_num = array_length(ids, 1);
 	while i <= w_num loop
-		insert into way_trees (way_id, node_id, error, path, subsize, tile) (select ids[i] + id_offset, node_id, error, path, subsize, tile from way_trees where way_id = ids[i]);
+		insert into way_trees (way_id, node_id, error, path, subsize) (select ids[i] + id_offset, node_id, error, path, subsize from way_trees where way_id = ids[i]);
 		i = i + 1;
 	end loop;
 	return 0;

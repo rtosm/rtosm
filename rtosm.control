@@ -1,0 +1,6 @@
+#rtosm extension
+
+comment = 'A Postgresql database extension to provide the functionality of real-time simplification of spatial objects in Openstreetmap API Database.'
+default_version='0.1'
+requires = intarray
+
