@@ -9,8 +9,10 @@ By building the EB-tree for each of the object sequence such as ways (nodes sequ
 
 This extension uses following two libraries:
 
-[klib](https://github.com/attractivechaos/klib)
-[c-minheap-array](https://github.com/armon/c-minheap-array)
+
+1. [klib](https://github.com/attractivechaos/klib)
+
+2. [c-minheap-array](https://github.com/armon/c-minheap-array)
 
 # License
 
