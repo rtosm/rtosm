@@ -5,8 +5,24 @@
 
 -- there are three main tables for an DOOPAS(Data Operation-Orentied Picking and Assessing Structure) instance:
 	-- the node error table, way tree table and relation tree table
+
+create temp table if not exists node_err(node_id BIGINT not null, 
+														error real not null,
+													primary key(node_id));
+
+-- for the update of node's error
+create index nder_idx on node_err(node_id);
+
+create table if not exists tile_nums(tile_level smallint not null,
+														tile CHAR(8) collate "C" not null, 
+														nums INTEGER not null,
+														error_ubound real not null,
+														error_lbound real not null,
+														primary key(tile_level, tile));
+
 create table if not exists node_vis_errors(node_id BIGINT not null,
 														error real not null,
+														tile_level smallint not null,
 														tile CHAR(8) collate "C" not null, 
 														primary key (node_id));
 
@@ -41,7 +57,7 @@ create or replace function build_node_vis_errors() returns integer AS $$
 DECLARE
 
 BEGIN
-	insert into node_vis_errors(node_id, error, tile) select id, -1, '0' from current_nodes;
+	--insert into node_vis_errors(node_id, error, tile) select id, -1, '0' from current_nodes;
 	return 0;
 END;
 
@@ -525,7 +541,7 @@ BEGIN
 		cur_error = error_from_ways;
 	end if;
 
-	geohash_tile = gcode_c(max_lon, max_lat, cur_error);
+	--geohash_tile = gcode_c(max_lon, max_lat, cur_error);
 
 	-- opening member id and closing member id of the selected node
 	om_id = sorted_way_ids[max_pos];
@@ -535,7 +551,10 @@ BEGIN
 	insert into relation_trees(relation_id, node_id, opening_member_id, closing_member_id, opening_member_type, closing_member_type, error, path, subsize) values (rel_id, nds[max_pos].id, om_id, cm_id, 'Way', 'Way', cur_error, n_path, j - i - 1);
 
 	-- update the node_vis_errors table if the error is a new maximum
-	update node_vis_errors set error = cur_error, tile = geohash_tile where node_id = nds[max_pos].id and error < cur_error;
+	--update node_vis_errors set error = cur_error, tile = geohash_tile where node_id = nds[max_pos].id and error < cur_error;
+
+	-- upsert the node_err 
+	with upsert as (update node_err set error = cur_error where node_id = nds[max_pos].id and error < cur_error returning *) insert into node_err select nds[max_pos].id, cur_error where not exists (select node_id from upsert) and not exists (select node_id from node_err where node_id = nds[max_pos].id) ;
 
 	return cur_error;
 END;
@@ -605,8 +624,12 @@ BEGIN
 	insert into relation_trees(relation_id, node_id, opening_member_id, closing_member_id, opening_member_type, closing_member_type, error, path, subsize) values(rel_id, rel_enode.id, opening_way_id, closing_way_id, 'Way', 'Way', rel_error, 't', rel_nodes_num);
 
 	--update the node's error with new maximum
-	update node_vis_errors set error = rel_error, tile = rel_snode_tile where node_id = rel_snode.id and error < rel_error ;
-	update node_vis_errors set error = rel_error, tile = rel_enode_tile where node_id = rel_enode.id and error < rel_error ;
+--	update node_vis_errors set error = rel_error, tile = rel_snode_tile where node_id = rel_snode.id and error < rel_error ;
+--	update node_vis_errors set error = rel_error, tile = rel_enode_tile where node_id = rel_enode.id and error < rel_error ;
+	
+		with upsert as (update node_err set error = rel_error where node_id = rel_snode.id and error < rel_error returning *) insert into node_err select rel_snode.id, rel_error where not exists (select node_id from upsert) and not exists (select node_id from node_err where node_id = rel_snode.id) ;
+
+		with upsert as (update node_err set error = rel_error where node_id = rel_enode.id and error < rel_error returning *) insert into node_err select rel_enode.id, rel_error where not exists (select node_id from upsert) and not exists (select node_id from node_err where node_id = rel_enode.id) ;
 
 	return 0;
 END;
@@ -1794,6 +1817,36 @@ $$ LANGUAGE PLPGSQL;
 
 ----------query.sql----------------------------------------------------------------
 
+----------build_tiles for node_vis_error----------------------------------------------------------------
+
+create or replace function build_tiles() returns INTEGER as $$
+DECLARE
+	n_id BIGINT;
+	err real ;
+	n_lon INTEGER;
+	n_lat INTEGER;
+	count INTEGER := 0;
+	candidate_tiles CHAR(8)[];
+	actual_tiles CHAR(8)[];
+
+BEGIN
+	-- loop through the node by error in descending order 
+	for n_id, err, n_lon, n_lat in select ne.node_id, ne.error, ns.longitude, ns.latitude from node_err ne inner join nodes ns on ns.node_id = ne.node_id order by ns.error DESC loop
+	
+		candidate_tiles = lonlat2tiles(n_lon, n_lat, err);
+		select array_agg(tile) into actual_tiles where tile = ANY(candidate_tiles);
+		
+		-- for each node, find the deepest tile and assign the tile 
+
+		-- it is very diffcult to build a tree alike structure in PL/pgSQL, so the better solution is to write the code in C function and call the function in SQL 
+
+		count = count + 1;
+	end loop;
+END;
+$$ LANGUAGE PLPGSQL;
+
+----------build_tiles for node_vis_error----------------------------------------------------------------
+
 ----------index.sql----------------------------------------------------------------
 
 create or replace function build_indexes() returns real as $$ 
@@ -1816,23 +1869,43 @@ $$ LANGUAGE PLPGSQL;
 ----------comp_geo.sql----------------------------------------------------------------
 
 create or replace function seg2pt_c(double precision, double precision, double precision, double precision, double precision, double precision) returns real 
-AS '$libdir/comp_geo', 'seg2pt_c'
+AS '$libdir/rtosm_comp', 'seg2pt_c'
 LANGUAGE C STRICT;
 
 create or replace function gcode_c(double precision, double precision, real) returns text
-AS '$libdir/comp_geo', 'gcode_c'
+AS '$libdir/rtosm_comp', 'gcode_c'
 LANGUAGE C STRICT;
 
 create or replace function maxdis_c(integer[], integer[], integer, integer, integer, integer) returns real 
-AS '$libdir/comp_geo', 'maxdis_c'
+AS '$libdir/rtosm_comp', 'maxdis_c'
 LANGUAGE C STRICT;
 
 create or replace function simpl_c(bigint, real) returns real 
-AS '$libdir/comp_geo', 'simpl_c'
+AS '$libdir/rtosm_comp', 'simpl_c'
 LANGUAGE C STRICT;
 
 create or replace function wquery_c(double precision, double precision, double precision, double precision) returns BIGINT[] 
-AS '$libdir/comp_geo', 'wquery_c'
+AS '$libdir/rtosm_comp', 'wquery_c'
+LANGUAGE C STRICT;
+
+create or replace function ntiles_c(integer) returns BIGINT
+AS '$libdir/rtosm_comp', 'ntiles_c'
+LANGUAGE C STRICT;
+
+create or replace function tileid_c(integer) returns BIGINT
+AS '$libdir/rtosm_comp', 'tileid_c'
+LANGUAGE C STRICT;
+
+create or replace function vquery_c(double precision, double precision, double precision, double precision, integer, real) returns BIGINT[] 
+AS '$libdir/rtosm_comp', 'vquery_c'
+LANGUAGE C STRICT;
+
+create or replace function ntoe_c(double precision, double precision, double precision, double precision, integer) returns real 
+AS '$libdir/rtosm_comp', 'ntoe_c'
+LANGUAGE C STRICT;
+
+create or replace function eton_c(double precision, double precision, double precision, double precision, real) returns integer 
+AS '$libdir/rtosm_comp', 'eton_c'
 LANGUAGE C STRICT;
 ----------comp_geo.sql----------------------------------------------------------------
 
