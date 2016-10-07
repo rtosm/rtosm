@@ -243,19 +243,21 @@ PG_FUNCTION_INFO_V1(wquery_c);
 
 */
 Datum wquery_c(PG_FUNCTION_ARGS) {
-	double wx1, wy1, wx2, wy2;
+	double wx1, wy1, wx2, wy2, elimit;
 	khash_t(str) * h;
 	khash_t(path) * hpath;
 	khash_t(nid) * hnid;
-	int i, j, ret, proc, ind, abs, count, hnidlen;
+	int i, j, ret, proc, ind, abs, count, hnidlen ;
 	unsigned wx1uint, wy1uint, wx2uint, wy2uint;
 
-	char * pre_stmt = "select way_id, node_id, path from way_trees where node_id in (select cn.id from (select node_id from node_vis_errors nve where tile in (%s)) nve inner join current_nodes cn on cn.id = nve.node_id and cn.longitude >= %d and cn.longitude <= %d and cn.latitude >= %d and cn.latitude <= %d) order by way_id, path;";
-	char stmnt[1500] ;
-	char tilestr[1024];
+	// limit the number of directly included node to 30000;
+	//char * pre_stmt = "select way_id, node_id, path from way_trees where node_id in (select cn.id from (select node_id from node_vis_errors nve where (tile_level, tile) in (%s)) nve inner join current_nodes cn on cn.id = nve.node_id and cn.longitude >= %d and cn.longitude <= %d and cn.latitude >= %d and cn.latitude <= %d) order by way_id, path;";
+	char * pre_stmt = "select way_id, node_id, path from way_trees where node_id in (select cn.id from (select node_id from node_vis_errors nve where (tile_level, tile) in (%s) and error > %f) nve inner join current_nodes cn on cn.id = nve.node_id and cn.longitude >= %d and cn.longitude <= %d and cn.latitude >= %d and cn.latitude <= %d) order by way_id, path;";
+	char stmnt[2000] ;
+	char tilestr[1500];
 
 	long * wids, * nids;
-	char ** paths, * tiles[80];
+	char ** paths ;
 	ArrayType * retarr;
 	Datum * vals ;
 
@@ -269,6 +271,12 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 	wx2 = PG_GETARG_FLOAT8(2);
 	wy2 = PG_GETARG_FLOAT8(3);
 
+	elimit = wx2 - wx1;
+	if (elimit < wy2 - wy1) {
+		elimit = wy2 - wy1;
+	}
+	elimit = elimit / 2000 * 3;
+
 	/* initialization of 3 hash sets
 		1. for tiles conditions
 		2. for paths of ancestors of a way's directly included nodes
@@ -278,8 +286,12 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 	hpath = kh_init(path);
 	hnid = kh_init(nid);
 
+	/* Initialize char string for database querying */
+	memset((void *)stmnt, 0, 2000 * sizeof(char));
+	memset((void *)tilestr, 0, 1500 * sizeof(char));
+
 	/* from window to tiles conditions  */
-	window2tiles(wx1, wy1, wx2, wy2, h, tiles);
+	window2tiles(wx1, wy1, wx2, wy2, h, tilestr);
 
 	/* from tiles condition to directly included nodes, ways and relations */
 	/* tiles2dinids(wx1, wy1, wx2, wy2, h, &wids, &nids, &paths);  */
@@ -291,23 +303,8 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 	wy1uint = wy1 * 10000000;
 	wx2uint = wx2 * 10000000;
 	wy2uint = wy2 * 10000000;
-
-	/* Initialize char string for database querying */
-	memset((void *)stmnt, 0, 1500 * sizeof(char));
-	memset((void *)tilestr, 0, 1024 * sizeof(char));
-
-	ind = 0;
-	for (i = kh_begin(h) ; i != kh_end(h); ++i) {
-		if (kh_exist(h, i)) {
-			if (0 == ind) {
-				ind = sprintf (tilestr, "\'%s\'", kh_key(h, i));
-			} else {
-				ind += sprintf (&tilestr[ind], ",\'%s\'", kh_key(h, i));
-			}
-		}
-	}
 	
-	sprintf(stmnt, pre_stmt, tilestr, wx1uint, wx2uint, wy1uint, wy2uint);
+	sprintf(stmnt, pre_stmt, tilestr, elimit, wx1uint, wx2uint, wy1uint, wy2uint);
 	/* begin to query the database to retrieve the data */
 	SPI_connect();
 
@@ -445,7 +442,6 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 	kh_clear(path, hpath);
 
 	//construct the array to be returned
-
 	for (i = 0 ; i < proc ; ++i) {
 		kh_put(nid, hnid, nids[i], &abs);
 	}
@@ -455,7 +451,9 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 	count = 0;
 
 	//a line to indicate the start of the result ids
-	fputs ("start of the result ids\n", fdd);
+	if (fdd) {
+	 	fputs ("start of the result ids\n", fdd);
+	}
 
 	for (i = kh_begin(hnid) ; i != kh_end(hnid) ; ++i) {
 		if (kh_exist(hnid, i)) {
@@ -479,11 +477,6 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 	}
 
 	SPI_finish();
-
-	//free the memoried used in h
-	for (i = 0 ; i < 80 ; ++i) {
-		pfree(tiles[i]);
-	}
 
 	PG_RETURN_ARRAYTYPE_P(retarr);
 	//PG_RETURN_ARRAYTYPE_P(construct_empty_array(INT8OID));

@@ -1854,7 +1854,8 @@ DECLARE
 
 BEGIN
 
-	create index ndve_idx on node_vis_errors(tile);
+	create index ndve_idx on node_vis_errors(tile_level, tile);
+	create index ndve_err_idx on node_vis_errors(error);
 	create index wt_nd_idx on way_trees(node_id);
 	create index wt_wy_idx on way_trees(way_id);
 	create index rt_nd_idx on relation_trees(node_id);

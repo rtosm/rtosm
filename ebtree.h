@@ -34,7 +34,7 @@ int arborway(long cur_way_id, long ids[], float errors[], char* paths[], int siz
 int gcode2(long xy_bits, int bits_count, char* tile);
 
 int get_ancestors(char * npath, khash_t(path) * hpath) ;
-int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * h, char *ptiles[]) ;
+int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * h, char *tilestr) ;
 ArrayType * iinids2array(khash_t(nid) * hnid, long *nids, int nidlen) ;
 
 int dump2file(qtree * qn, FILE * fdd, int level) ;
@@ -45,3 +45,4 @@ int covered_nodes_number(Tile_tree * ttp, double wx1, double wy1, double wx2, do
 heap* dig_down(heap* h, Tile_tree * ttp) ;
 unsigned long tile2gbits(char * tile, int level) ;
 char* gbits2tile(unsigned long geobits, int level_depth, char geocode[]) ;
+unsigned long xy2gbits(double x, double y, int level) ;

@@ -269,10 +269,12 @@ int get_ancestors(char * npath, khash_t(path) * hpath) {
 	return cnt;
 }
 
-/* calculate the tiles from window   */
-int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * h, char * tiles[]) {
-	double xspn, yspn, spn, tole;
-	int i, abs;
+/* calculate the string of tiles from querying window */
+	// the level of the tile is determined by the size of the querying window;
+int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * h, char * tilestr) {
+	double xspn, yspn, spn, tile_major = 360.0;
+	char tile[4][9]; 
+	int i = 1, j = 0, abs = 0, nch = 0;
 
 	/* get the major span of the window */
 	xspn = wx2 - wx1 ;
@@ -284,28 +286,33 @@ int window2tiles(double wx1, double wy1, double wx2, double wy2, khash_t(str) * 
 		spn = yspn ;
 	}
 
-	tole = spn / 2048.0 * 3.0;
-	for (i = 0 ; i < 80 ; i++) {
-		tiles[i] = palloc0(9 * sizeof(char));
-	}
-
-	i = 0;
-	// 0.55 is a magic number that is slightly above 360 / 2000 * 3.0 = 0.54, that mean the largest error level in a 
+	// 0.55 is a magic number that is slightly above 360 / 2000 * 3.0 = 0.54, it mean the largest error level in a 
 		// top tile 
-	while (tole < 0.55) {
-		gcode(wx1, wy1, tole, tiles[i]);
-		gcode(wx1, wy2, tole, tiles[i + 1]);
-		gcode(wx2, wy2, tole, tiles[i + 2]);
-		gcode(wx2, wy1, tole, tiles[i + 3]);
+	while (spn < tile_major && i < 21) {
+		gbits2tile(xy2gbits(wx1, wy1, i), i, tile[0]) ;
+		gbits2tile(xy2gbits(wx1, wy2, i), i, tile[1]) ;
+		gbits2tile(xy2gbits(wx2, wy2, i), i, tile[2]) ;
+		gbits2tile(xy2gbits(wx2, wy1, i), i, tile[3]) ;
 
-		kh_put(str, h, tiles[i], &abs);
-		kh_put(str, h, tiles[i + 1], &abs);
-		kh_put(str, h, tiles[i + 2], &abs);
-		kh_put(str, h, tiles[i + 3], &abs);
-		
-		tole = tole * 2;
-		i = i + 4;
+		kh_clear(str, h);
+
+		kh_put(str, h, tile[0], &abs);
+		kh_put(str, h, tile[1], &abs);
+		kh_put(str, h, tile[2], &abs);
+		kh_put(str, h, tile[3], &abs);
+
+		for (j = kh_begin(h) ; j != kh_end(h); ++j) {
+			if (kh_exist(h, j)) {
+				nch += sprintf (&tilestr[nch], "(%d,\'%s\'),", i, kh_key(h, j));
+			}
+		}
+
+		i++;
+		tile_major /= 2;
 	}
+
+	// eliminate the last ',' character
+	if (nch > 0) tilestr[nch - 1] = 0;
 	
 	return i;
 }
@@ -521,6 +528,34 @@ char* gbits2tile(unsigned long geobits, int level_depth, char geocode[]) {
 	if (mod_num > 0) {
 		int single_code = (geobits << (5 - mod_num)) & 0x1f;
 		geocode[div_num] = codes[single_code];
+		geocode[div_num + 1] = 0;
+	} else {
+		geocode[div_num] = 0;
 	}
 	return geocode;
+}
+
+unsigned long xy2gbits(double x, double y, int level) {
+	unsigned long retval = 0;
+	double xlb = -180, xub = 180, ylb = -90, yub = 90;
+	int i;
+
+	for (i = 0 ; i < level ; i++) {
+		if (x > (xlb + xub) / 2) {
+			xlb = (xlb + xub) / 2;
+			retval = (retval << 1) | 0x01;
+		} else {
+			xub = (xlb + xub) / 2;
+			retval = retval << 1;
+		}
+		if (y > (ylb + yub) / 2) {
+			ylb = (ylb + yub) / 2;
+			retval = (retval << 1) | 0x01;
+		} else {
+			yub = (ylb + yub) / 2;
+			retval = retval << 1;
+		}
+	}
+
+	return retval;
 }
