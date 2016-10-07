@@ -21,12 +21,11 @@ a copy of which can be found in the [LICENSE](LICENSE) file.
 
 # Installation
 
-The Rails Port is a Ruby on Rails application that uses PostgreSQL as its database, and has a large
-number of dependencies for installation. For full details please see [INSTALL.md](INSTALL.md)
+The prerequisite of the rtosm is openstreetmap-website which is the backbone code of the openstreetmap API database.
 
 ## openstreetmap-website
 
-To insin order to tall rtosm, you need to install the [openstreetmap-website](https://github.com/openstreetmap/openstreetmap-website) first.
+To install rtosm, you need to install the [openstreetmap-website](https://github.com/openstreetmap/openstreetmap-website) first.
 
 ## rtosm install
 ```
