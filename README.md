@@ -18,3 +18,33 @@ This extension uses following two libraries:
 
 This software is licensed under the [GNU General Public License 2.0](http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt),
 a copy of which can be found in the [LICENSE](LICENSE) file.
+
+# Installation
+
+The Rails Port is a Ruby on Rails application that uses PostgreSQL as its database, and has a large
+number of dependencies for installation. For full details please see [INSTALL.md](INSTALL.md)
+
+## openstreetmap-website
+
+To insin order to tall rtosm, you need to install the [openstreetmap-website](https://github.com/openstreetmap/openstreetmap-website) first.
+
+## rtosm install
+```
+make
+sudo make install
+
+psql -d openstreetmap
+create extension intarray;
+create extension rtosm;
+select build_way_trees();
+select build_relation_trees();
+select build_indexes();
+select tileid_c(30000);
+```
+# Usage
+
+Following query will select ids of all the nodes the simplified spatial objects need. No matter how large the bbox(x1, y1, x2, y2) size is, the output size of the wquery_c will be reasonable. with the simplified objects' node, you can do analysis or visualization. 
+```
+select wquery_c(bbox.x1, bbox.y1, bbox.x2, bbox.y2);
+```
+
