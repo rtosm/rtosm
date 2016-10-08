@@ -340,11 +340,11 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 		TupleDesc tupdesc = SPI_tuptable->tupdesc;
 		SPITupleTable * tuptable = SPI_tuptable;
 		long wid = 0, pre_wid = 0, nid;
-		char *npath, * pathstr = 0 ;
+		char *npath, * pathstr = NULL ;
 		int path_con_len = 0, ret2, proc2 ;
 		//get the nodes which are ancestor of a selected way's directly included nodes;
 		char * path2id_tpl = "select node_id from way_trees where way_id = %lu and path in (%s)"; 
-		char * path2id = 0;
+		char * path2id = NULL;
 		char ttstr2[80];
 
 		/* copy the data retrieved from table into arrays  */
@@ -383,10 +383,15 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 
 					ind = 0;
 					/* free old pathst and allocate new one  */
-					if (pathstr != 0) {
+					if (pathstr != NULL) {
 						pfree(pathstr);
-						pathstr = 0;
+						pathstr = NULL;
 					}
+					if (path2id != NULL) {
+						pfree(path2id);
+						path2id = NULL;
+					}
+
 					path_con_len = kh_size(hpath);
 					if (path_con_len > 0) {
 						pathstr = palloc0(path_con_len * 16 + 16);
@@ -401,7 +406,7 @@ Datum wquery_c(PG_FUNCTION_ARGS) {
 						}
 
 						/* select the node_ids from the paths  */
-						path2id = palloc0((80 + path_con_len) * sizeof(char));
+						path2id = palloc0(80 + path_con_len * 16 + 16);
 						sprintf(path2id, path2id_tpl, pre_wid, pathstr);
 
 						/* for debug purpose */
