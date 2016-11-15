@@ -374,6 +374,8 @@ int dump2file(qtree * qn, FILE * fdd, int level) {
 	return 0;
 }
 
+//compare the two float to make heap from a min-heap to a max-heap
+// tt means tile's error 
 int compare_tt_keys(void *key1, void *key2) {
 	float kf1 = *((float *)key1);
 	float kf2 = *((float *)key2);
@@ -519,6 +521,13 @@ char* gbits2tile(unsigned long geobits, int level_depth, char geocode[]) {
 	int mod_num = (level_depth * 2) % 5;
 	int div_num = (level_depth * 2) / 5;
 	int i;
+
+	if (level_depth == 0) {
+		geocode[0]='0';
+		geocode[1]='\0';
+		return geocode;
+	}
+
 	for (i = 0; i < div_num ; i++) {
 		int single_code = (geobits >> ((div_num - 1 - i) * 5 + mod_num)) & 0x1f;
 		geocode[i] = codes[single_code];
@@ -558,4 +567,28 @@ unsigned long xy2gbits(double x, double y, int level) {
 	}
 
 	return retval;
+}
+
+int depth(double wx1, double wy1, double wx2, double wy2) {
+	double major_span = wx2 - wx1;
+	double span[21] = {180, 90, 45, 22.5, 11.25, 5.625, 2.8125, 1.40625, 0.703125, 0.3515625, 0.17578125, 0.087890625, 0.0439453125, 0.02197265625, 0.010986328125, 0.0054931640625, 0.00274658203125, 0.001373291015625, 0.0006866455078125, 0.00034332275390625, 0.000171661376953125};
+
+	int level = 0;
+
+	if (major_span < wy2 - wy1) major_span = wy2 - wy1;
+
+	while (span[level] > major_span && level <= 19) level++;
+
+	return level;
+}
+
+
+char * * qtile(int level, double wx1, double wy1, double wx2, double wy2, char ** qtiles) {
+
+	gbits2tile(xy2gbits(wx1, wy1, level), level, qtiles[0]) ;
+	gbits2tile(xy2gbits(wx1, wy2, level), level, qtiles[1]) ;
+	gbits2tile(xy2gbits(wx2, wy2, level), level, qtiles[2]) ;
+	gbits2tile(xy2gbits(wx2, wy1, level), level, qtiles[3]) ;
+
+	return qtiles;
 }

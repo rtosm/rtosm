@@ -1815,6 +1815,37 @@ BEGIN
 end;
 $$ LANGUAGE PLPGSQL;
 
+create or replace function test_nodes(wx1 double precision, wy1 double precision, wx2 double precision, wy2 double precision) returns setof nodes AS $$
+DECLARE
+	init_nodes BIGINT[];
+
+	loop_nodes BIGINT[];
+
+	ncount integer = 0;
+	depth integer = 1;
+	dep_limit integer = 0;
+BEGIN
+
+	select depth_c(wx1, wy1, wx2, wy2) into dep_limit;
+	select array_agg(nve.node_id) into init_nodes from node_vis_errors nve inner join nodes ns on ns.node_id = nve.node_id and nve.tile_level = 0 and nve.tile = '0' and ns.longitude > wx1 * 10000000 and ns.longitude < wx2 * 10000000 and ns.latitude > wy1 * 10000000 and ns.latitude < wy2 * 10000000;
+
+	ncount = array_length(init_nodes, 1);
+	
+	while ncount < 30000 and depth < dep_limit loop
+
+		select array_agg(ons.node_id) into loop_nodes from nodes ons where ons.node_id in (select nve.node_id from node_vis_errors nve inner join nodes ns on ns.node_id = nve.node_id and nve.tile_level = depth and nve.tile in (select unnest(qtile_c(depth, wx1, wy1, wx2, wy2))) and ns.longitude > wx1 * 10000000 and ns.longitude < wx2 * 10000000 and ns.latitude > wy1 * 10000000 and ns.latitude < wy2 * 10000000 order by nve.error DESC limit (30000 - ncount)) ;
+
+		init_nodes = init_nodes || loop_nodes;
+
+		ncount = ncount + array_length(loop_nodes, 1);
+		depth = depth + 1;
+
+	end loop;
+	return query select ons.* from nodes ons where ons.node_id in (select unnest(init_nodes));
+
+END;
+$$ LANGUAGE PLPGSQL;
+
 ----------query.sql----------------------------------------------------------------
 
 ----------build_tiles for node_vis_error----------------------------------------------------------------
@@ -1898,6 +1929,7 @@ AS '$libdir/rtosm_comp', 'tileid_c'
 LANGUAGE C STRICT;
 
 create or replace function vquery_c(double precision, double precision, double precision, double precision, integer, real) returns BIGINT[] 
+--create or replace function vquery_c(double precision, double precision, double precision, double precision, integer, real) returns integer 
 AS '$libdir/rtosm_comp', 'vquery_c'
 LANGUAGE C STRICT;
 
@@ -1907,6 +1939,14 @@ LANGUAGE C STRICT;
 
 create or replace function eton_c(double precision, double precision, double precision, double precision, real) returns integer 
 AS '$libdir/rtosm_comp', 'eton_c'
+LANGUAGE C STRICT;
+
+create or replace function depth_c(double precision, double precision, double precision, double precision) returns integer 
+AS '$libdir/rtosm_comp', 'depth_c'
+LANGUAGE C STRICT;
+
+create or replace function qtile_c(integer, double precision, double precision, double precision, double precision) returns text[]
+AS '$libdir/rtosm_comp', 'qtile_c'
 LANGUAGE C STRICT;
 ----------comp_geo.sql----------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "khash.h"
+#include "kvec.h"
 #include <utils/array.h>
 #include <math.h>
 #include <utils/lsyscache.h>
@@ -25,6 +26,8 @@ Datum tileid_c(PG_FUNCTION_ARGS) ;
 Datum vquery_c(PG_FUNCTION_ARGS) ;
 Datum ntoe_c(PG_FUNCTION_ARGS) ;
 Datum eton_c(PG_FUNCTION_ARGS) ;
+Datum depth_c(PG_FUNCTION_ARGS) ;
+Datum qtile_c(PG_FUNCTION_ARGS) ;
 
 PG_FUNCTION_INFO_V1(seg2pt_c);
 
@@ -970,13 +973,20 @@ Datum eton_c(PG_FUNCTION_ARGS) {
 	PG_RETURN_INT32(nlimit);
 }
 
+//two hashmap to handle the tile_str numbers and find the max-min error in tile nodes
+//KHASH_MAP_INIT_STR(tlstr, float);
+//KHASH_MAP_INIT_STR(mami, long);
+//KHASH_SET_INIT_INT64(nodeid);
+
 PG_FUNCTION_INFO_V1(vquery_c);
 /*
 	user specify the query condition including the querying window and error tolerance and count limit
 */
 Datum vquery_c(PG_FUNCTION_ARGS) { 
-	int ncount = 0;
-	/*
+	int ncount = 0, cur_depth = 0, depth_limit = 0; //, rs_num = 0, ret, proc, i, inode_num, retcnt = 0;
+	int i, inode_num, retcnt = 0;
+
+	//get arguments 
 	double wx1 = PG_GETARG_FLOAT8(0);
 	double wy1 = PG_GETARG_FLOAT8(1);
 	double wx2 = PG_GETARG_FLOAT8(2);
@@ -984,15 +994,677 @@ Datum vquery_c(PG_FUNCTION_ARGS) {
 	int nlimit = PG_GETARG_INT32(4);
 	float elimit = PG_GETARG_FLOAT4(5);
 
+	//char tile_nodes_str[512], *hm_key;
 
-	if (nlimit <= 0) {
+	//array to hold indirectly included nodes
+	long * inodes, * rst ;
+	//a hashset for the nodes in case of duplicated node
+
+	//max-min error for 20 levels of tiles
+	float mami[20];
+	// max-min top index for tile nodes ; numbers of tile nodes
+	int lv_nd_mmtop[20], lv_nd_nums[20] ;
+	//int lv_tl_nums[20], lv_nd_remains[20], lv_nd_nums[20] ;
+	//query results for 20 levels of tiles
+	presort_node *pns[20] ;
+	//for debug purpose
+	FILE * fdd = fopen("/tmp/palloc.txt","a");
+
+	//khash_t(mami) * hmm = kh_init(mami) ;
+	//khash_t(nodeid) * hnid = kh_init(nodeid);
+
+	//depress the warning of unused elimit 
+	mami[0] = elimit;
+
+	//return array's elements
+	Datum * vals ;
+	ArrayType * retarr;
+
+	//heap h;
+	//heap_create(&h, 0, compare_tt_keys);
+
+	depth_limit = depth(wx1, wy1, wx2, wy2);
+
+	//sprintf (tile_nodes_str, tile_tmpl, 0, "0", wx1int, wx2int, wy1int, wy2int, nlimit);
+
+	SPI_connect();
+
+	//int wx1int = wx1 * 10000000, wy1int = wy1 * 10000000, wx2int = wx2 * 10000000, wy2int = wy2 * 10000000;
+	if (fdd) {
+		fprintf(fdd, "rst allocated memory %ld\n", nlimit * sizeof(long));
+		fflush(fdd);
+	}
+	rst = palloc0(nlimit * sizeof (long));
+
+	//retrieve nodes from the top tile 
+	//ret = SPI_execute(tile_nodes_str, true, 0);
+
+	//proc = SPI_processed ;
+
+	while (ncount < nlimit && cur_depth <= depth_limit) {
+
+		//from coordinate to the level nodes;
+		get_nodes(wx1, wy1, wx2, wy2, cur_depth, &pns[cur_depth], nlimit - ncount, &lv_nd_nums[cur_depth],&lv_nd_mmtop[cur_depth], &mami[cur_depth]);
+
+		//get the level nodes;
+		//xy2tilestr(tile_nodes_str, &lv_tl_nums[cur_depth], hme);
+
+		//get the level's max-min error
+		//mami[i] = get_mami(&ncount, resultnid, lv_nd_remains, &lv_nd_nums, cur_depth);
+
+		//extract all nodes in pns with error larger than mami error to resultset
+		ncount += set_result(rst, ncount, nlimit, pns, cur_depth, lv_nd_nums, lv_nd_mmtop, mami);
+
+		if (fdd) {
+			fprintf(fdd, "The number of nodes in result sets is %d ;\n", ncount);
+			fflush(fdd);
+		}
+
+		cur_depth++;
 	}
 
-	if (elimit <= 0) {
+	//guard following case:
+		//1. dig to the floor(level = 20) and resultset is not full or even empty
+		//2. very easily full
+
+	// indirectly included nodes by get ebtree ancestor of each relation/way
+	//char * ways_str = "select wt.way_id, wt.node_id, wt.path from way_trees wt where wt.node_id in (%s) order by wt.way_id, wt.path";
+	get_more_nodes(rst, ncount, &inodes, &inode_num);
+
+	//construct an array of node_id to return
+	if (fdd) {
+		fprintf(fdd, "the vals allocated size %ld\n", sizeof(Datum) * (ncount+inode_num));
+		fflush(fdd);
+	}
+	vals = palloc0(sizeof(Datum) * (ncount + inode_num));
+
+	for (i = 0 ; i < ncount ; i++) {
+		vals[retcnt++] = Int64GetDatum(rst[i]);
 	}
 
-	char * query_str = "select from  ";
-	*/
+	for (i = 0 ; i < inode_num ; i++) {
+		vals[retcnt++] = Int64GetDatum(inodes[i]);
+	}
+	//eliminate the dulications in result set
 
-	PG_RETURN_INT32(ncount);
+
+	retarr = construct_array(vals, retcnt, INT8OID, sizeof(long), true, 'i');
+	if (fdd) {
+		fprintf(fdd, "the return array built size %d\n", retcnt);
+		fflush(fdd);
+	}
+
+	//free the allocated memories
+	//pfree(rst);
+	//pfree(inodes);
+
+	//free the presort_node's array
+	for (i = 0 ; i < cur_depth ; i++) {
+		//pfree(pns[i]);
+	}
+	if (fdd) {
+		fprintf(fdd, "before SPI_finish()\n");
+	}
+
+	SPI_finish();
+
+	if (fdd) {
+		fprintf(fdd, "after SPI_finish()\n");
+		fclose(fdd);
+	}
+
+	PG_RETURN_ARRAYTYPE_P(retarr);
+
+	//PG_RETURN_INT32(ncount + inode_num);
+}
+
+PG_FUNCTION_INFO_V1(depth_c);
+/*
+	user specify the query condition including the querying window and error tolerance and count limit
+*/
+Datum depth_c(PG_FUNCTION_ARGS) { 
+	double wx1 = PG_GETARG_FLOAT8(0);
+	double wy1 = PG_GETARG_FLOAT8(1);
+	double wx2 = PG_GETARG_FLOAT8(2);
+	double wy2 = PG_GETARG_FLOAT8(3);
+
+	PG_RETURN_INT32(depth(wx1, wy1, wx2, wy2));
+}
+
+PG_FUNCTION_INFO_V1(qtile_c);
+/*
+	user specify the query condition including the querying window and error tolerance and count limit
+*/
+Datum qtile_c(PG_FUNCTION_ARGS) { 
+	int level = PG_GETARG_INT32(0);
+	double wx1 = PG_GETARG_FLOAT8(1);
+	double wy1 = PG_GETARG_FLOAT8(2);
+	double wx2 = PG_GETARG_FLOAT8(3);
+	double wy2 = PG_GETARG_FLOAT8(4);
+
+	// val[i] = CStringGetTextDatum();
+	// see the construct_array in Postgresql source
+
+	char *qtiles[4];
+  Datum datstr[4] ;
+	ArrayType * retstr;
+  int i ;
+
+	for (i = 0 ; i < 4 ; i++) 
+		qtiles[i] = palloc0(9 * sizeof(char));
+
+	gbits2tile(xy2gbits(wx1, wy1, level), level, qtiles[0]) ;
+	gbits2tile(xy2gbits(wx1, wy2, level), level, qtiles[1]) ;
+	gbits2tile(xy2gbits(wx2, wy2, level), level, qtiles[2]) ;
+	gbits2tile(xy2gbits(wx2, wy1, level), level, qtiles[3]) ;
+
+  for (i = 0 ; i < 4 ; i++) {
+    datstr[i] = CStringGetTextDatum(qtiles[i]);
+  }
+
+  retstr = construct_array(datstr, 4, TEXTOID, -1, false, 'i');
+
+  PG_RETURN_ARRAYTYPE_P(retstr);
+}
+
+int get_nodes(double wx1, double wy1, double wx2, double wy2, int level, presort_node **pns, int remain_len, int * nodes_num, int *mami_num, float * mami_err) {
+
+	int wx1i = wx1 * 10000000;
+	int wy1i = wy1 * 10000000;
+	int wx2i = wx2 * 10000000;
+	int wy2i = wy2 * 10000000;
+
+	char qtiles[4][9];
+  int i, rabs, j = 0, ret, proc, tile_num;
+
+	char * tile_tmpl = "select nve.node_id, nve.error, nve.tile from node_vis_errors nve inner join nodes ns on nve.node_id = ns.node_id where nve.tile_level = %d and nve.tile in (%s) and ns.longitude >= %d and ns.longitude <= %d and ns.latitude >= %d and ns.latitude <= %d order by nve.error DESC limit %d";
+	char tile_nodes_str[512], tilestr[64];
+	//hashmap for tiles and their indexes of node with max-min error
+	khash_t(tlstr) * hts = kh_init(tlstr) ;
+
+	FILE * fdd = fopen("/tmp/palloc.txt", "a");
+
+	//for (i = 0 ; i < 4 ; i++) 
+		//qtiles[i] = palloc0(9 * sizeof(char));
+
+	gbits2tile(xy2gbits(wx1, wy1, level), level, qtiles[0]) ;
+	gbits2tile(xy2gbits(wx1, wy2, level), level, qtiles[1]) ;
+	gbits2tile(xy2gbits(wx2, wy2, level), level, qtiles[2]) ;
+	gbits2tile(xy2gbits(wx2, wy1, level), level, qtiles[3]) ;
+
+	for (i = 0 ; i < 4 ; i++) {
+		int ki ;
+		ki = kh_put(tlstr, hts, qtiles[i], &rabs);
+		if (rabs) kh_val(hts, ki) = -1;
+	}
+
+	tile_num = kh_size(hts);
+	if (fdd) {
+		fprintf(fdd, "the tile_num is %d\n", tile_num);
+		fflush(fdd);
+	}
+	for (i = kh_begin(hts); i != kh_end(hts); i++) {
+		if (kh_exist(hts, i)) {
+			j += sprintf(tilestr + j, "\'%s\',", kh_key(hts, i));
+		}
+	}
+
+	if (j > 0)
+		tilestr[j - 1] = '\0';
+
+	sprintf(tile_nodes_str, tile_tmpl, level, tilestr, wx1i, wx2i, wy1i, wy2i, remain_len);
+	
+	if (fdd) {
+		fprintf (fdd, "The level %d nodes query string is %s ; \n", level, tile_nodes_str);
+		fflush(fdd);
+	}
+	ret = SPI_execute(tile_nodes_str, true, 0);
+
+	proc = SPI_processed;
+	*nodes_num = proc;
+
+	if (ret > 0 && SPI_tuptable != NULL) {
+		TupleDesc tupdesc = SPI_tuptable->tupdesc;
+		SPITupleTable * tuptable = SPI_tuptable;
+		presort_node *pna ;
+		// the number of founded max-min error of each tile
+		int mmn = 0;
+
+		if (fdd) fprintf(fdd, "pns allocated size : %ld \n", proc * sizeof(presort_node)); 
+		if (fdd) fflush(fdd);
+		*pns = palloc(proc * sizeof(presort_node));
+
+		pna = *pns;
+		*mami_num = 0;
+		*mami_err = -1;
+
+		for (i = proc - 1 ; i >= 0 ; i--) {
+			HeapTuple tuple = tuptable->vals[i];
+
+			pna[i].nid = atol(SPI_getvalue(tuple, tupdesc, 1));
+			pna[i].error = atof(SPI_getvalue(tuple, tupdesc, 2));
+			pna[i].tile = SPI_getvalue(tuple, tupdesc, 3);
+
+			//trim the space in tile to ensure the equality of calculated tile string
+			for (j = 1 ; j < 9 ; j++) {
+				if (pna[i].tile[j] == ' ') {
+					pna[i].tile[j] = '\0';
+					break;
+				} 
+			}
+			if (fdd) {
+				fprintf(fdd, "nid: %lu ; error : %f ; tile : %s \n", pna[i].nid, pna[i].error, pna[i].tile);
+				fflush(fdd);
+			}
+
+			//find the max-min error in the level tiles
+			if (mmn < tile_num) {
+				int ki;
+				ki = kh_get(tlstr, hts, pna[i].tile);
+				if (fdd) {
+					fprintf(fdd, "The kh_val(hts,ki) is %d\n", kh_val(hts, ki));
+					fprintf(fdd, "ki : %d ; kend : %d \n", ki, kh_end(hts));
+					fflush(fdd);
+				}
+				if (ki != kh_end(hts) && kh_val(hts, ki) < 0) {
+					//store the index of the node with max-min error for each of the 4 tiles
+					kh_val(hts, ki) = i + 1;
+					mmn++;
+
+					//if all the indexes of the nodes with max-min error for the 4 tiles
+						//then set the level's max-min error and index 
+					if (mmn == tile_num) {
+						*mami_err = pna[i].error;
+						*mami_num = i + 1;
+						if (fdd) {
+							fprintf(fdd, "The level : %d mami_num : %d , mami_error %f ; \n", level, *mami_num, *mami_err);
+							fflush(fdd);
+						}
+					}
+				}
+			}
+		}
+
+		//guard for some tiles are empty
+		if (mmn < tile_num) {
+			//iterator over the existing max-min error of tile nodes
+			for (i = kh_begin(hts) ; i != kh_end(hts) ; i++) {
+				if (kh_exist(hts, i) && (kh_val(hts, i) > *mami_num)) {
+					*mami_num = kh_val(hts, i) + 1;
+					*mami_err = pna[*mami_num - 1].error;
+					if (fdd) {
+						fprintf(fdd, "The kh_val(hts,ki) is %d\n", kh_val(hts, i));
+						fflush(fdd);
+					}
+				}
+			}
+		}
+
+		//kh_clear(tlstr, hts);
+		kh_destroy(tlstr, hts);
+		if (fdd) fclose(fdd);
+
+	} else {
+		// here query goes wrong
+	}
+
+	//clear the khash
+
+	return 0;
+}
+
+//copy tile nodes into result set 
+	// rst_top points to the top available resultset position
+	// topmm points to the top remaining node, when no remaining node, the topmm equals tln_num
+int set_result(long * rst, int rst_top, int nlimit, presort_node ** pns, int level, int * tln_num, int *topmm, float *mamis) {
+
+	int i, j, rst_ts = rst_top;
+	int candi_num = 0;
+	int tmp_topmm[20];
+
+	// test if the number of all candicate nodes overflows the resultset
+	for (i = 0; i < level ; i++) {
+
+		if (topmm[i] >= tln_num[i]) {
+			// all the nodes have been copyed into resultset. 
+			tmp_topmm[i] = topmm[i];
+		} else {
+			// Determine the number of nodes whose error is larger than current level's mami
+			int lb = topmm[i];
+			int ub = tln_num[i] - 1;
+			int ct = (lb + ub) / 2;
+
+			//guard for the edge case when all remaining node are larger/smaller than the max-min error
+				// or the ub and lb are the same node where binary search doesn't work
+			if (pns[i][ub].error >= mamis[level]) {
+				candi_num += ub - lb + 1;
+				tmp_topmm[i] = ub + 1;
+
+			// prevent when no nodes are larger than the max-min error
+			} else if (pns[i][lb].error < mamis[level]) {
+				tmp_topmm[i] = lb;
+
+			} else {
+
+				//binary search for the mami nodes
+				while (ub - lb > 1) {
+					ct = (lb + ub) / 2;
+					if (pns[i][ct].error > mamis[level]) {
+						lb = ct;
+					} else if (pns[i][ct].error < mamis[level]) {
+						ub = ct;
+					} else {
+						ub = ct + 1;
+						break;
+					}
+				}
+
+				//calculate the increasement of the number of candidate nodes
+				candi_num += ub - lb;
+				tmp_topmm[i] = ub;
+			}
+		}
+		//
+	}
+
+	// add the current level candidate nodes
+	candi_num += topmm[level];
+
+	if (rst_top + candi_num <= nlimit) {
+		// simply copy from candidate set into result set
+		for (i = 0 ; i < level ; i++) {
+			for (j = topmm[i] ; j < tmp_topmm[i] ; j++) {
+				rst[rst_top++] = pns[i][j].nid;
+			}
+			//update the top_max_min indicator for each level tile
+			topmm[i] = tmp_topmm[i];
+		}
+		// copy the current level's nodes
+		for (j = 0; j < topmm[level]; j++) {
+			rst[rst_top++] = pns[level][j].nid;
+		}
+		//TODO: feedback to caller all nodes have been copied into resultset
+
+	} else {
+		// use a max-heap to push and pop out nodes from candidate set in order
+		heap h;
+
+			//first initiate a heap
+		heap_create(&h, candi_num, compare_tt_keys);
+
+		for (i = 0 ; i < level ; i++) {
+			for (j = topmm[i] ; j < tmp_topmm[i] ; j++) {
+				heap_infix(&h, (void *)&pns[i][j].error, (void *)&pns[i][j]);
+			}
+		}
+		// copy the current level's nodes
+		for (j = 0; j < topmm[level]; j++) {
+			heap_infix(&h, (void *)&pns[level][j].error, (void *)&pns[level][j]);
+		}
+
+		//pop out nodes from max-heap
+		while (nlimit - rst_top > 0) {
+			float *key ;
+			presort_node *pn;
+			
+			heap_delmin(&h, (void **)&key, (void **)&pn); 
+			//exit the loop if heap is empty, this can't happen 
+			//if (r == 0) break;
+			rst[rst_top++] = pn->nid;
+		}
+		//deinitialize the heap
+		heap_destroy(&h);
+	}
+	return rst_top - rst_ts;
+}
+
+//get the indirectly included nodes by get ancestor of directly included nodes;
+int get_more_nodes(long * rst, int rst_num, long **inodeids, int * inode_num) {
+
+	int ret, proc, i, j = 0, rabs, print_size, qstr_size = 0, ret2, proc2, way_count = 0;
+	char * qtmpl = "select wt.way_id, wt.path from way_trees wt where wt.node_id in (%s) order by wt.way_id, wt.path";
+	char * nodeidstr, * query_str, * path, *wn_paths = 0, *wn_qstr = 0 ;
+	long wid, prewid = -1;
+	//a dynamic array to hold ways' indirectly included nodes;
+		// pairs of values such as (way_id, path)
+	kvec_t(char *) indqstr;
+
+	//for debug purpose
+	FILE * fdd = fopen("/tmp/palloc.txt", "a");
+
+	//hashset for directly-included nodes' ancestors pathes;
+	khash_t(path) *hpath;
+	hpath = kh_init(path);
+
+	kv_init(indqstr);
+
+	//hashset for directly-included nodes' path 
+	khash_t(dnp) *hdnp ;
+	hdnp = kh_init(dnp);
+
+	if (fdd) fprintf(fdd, "the nodeidstr allocated size: %ld ; \nThe query_str allocated size %ld\n", rst_num * 12 + sizeof(char), (rst_num * 12 + 256) * sizeof(char));
+	if (fdd) fflush(fdd);
+	nodeidstr = palloc0(rst_num * 12 * sizeof(char));
+	query_str = palloc0((rst_num * 12 + 256) * sizeof(char));
+
+	for (i = 0 ; i < rst_num ; i++) {
+		j += sprintf(nodeidstr + j, "%lu,", rst[i]);
+	}
+
+	if (j > 0)
+		nodeidstr[j - 1] = '\0';
+
+	sprintf(query_str, qtmpl, nodeidstr);
+
+	if (fdd) {
+		fprintf(fdd, "The way nodes sorting query string : %s ;\n", query_str); 
+		fflush(fdd);
+	}
+
+	ret = SPI_execute(query_str, true, 0);
+
+	proc = SPI_processed;
+
+	//free the allocated memory for query strings
+	//pfree(nodeidstr);
+	//pfree(query_str);
+
+	if (ret > 0 && SPI_tuptable != NULL) {
+		TupleDesc tupdesc = SPI_tuptable->tupdesc;
+		SPITupleTable * tuptable = SPI_tuptable;
+
+		//allocate memory for the way_id, node_id and path
+		//wids = palloc0(proc * sizeof(long));
+		//nids = palloc0(proc * sizeof(long));
+		//paths = palloc0(proc * sizeof(char *));
+		//wn_num = proc;
+
+		for (i = 0 ; i < proc ; i++) {
+			HeapTuple tuple = tuptable->vals[i];
+
+			//wids[i] = SPI_getvalue(tuple, tupdesc, 1);
+			//nids[i] = SPI_getvalue(tuple, tupdesc, 2);
+			//paths[i] = SPI_getvalue(tuple, tupdesc, 3);
+
+			wid = atol(SPI_getvalue(tuple, tupdesc, 1));
+			path = SPI_getvalue(tuple, tupdesc, 2);
+
+			//to trim space from path string
+			for (j = 1 ; j < 9 ; j++) {
+				if (path[j] == ' ') {
+					path[j] = '\0';
+					break;
+				}
+			}
+
+			if (fdd)  {
+				fprintf(fdd, "way_id : %lu ; path : %s \n", wid, path);
+				fflush(fdd);
+			}
+
+			if (prewid != -1 && wid != prewid && kh_size(hpath) > 0) {
+
+				//allocate mem for (way_id, path) condition pair
+				if (fdd) {
+				 	fprintf(fdd, "the wn_paths allocated size %ld \n", kh_size(hpath) * 24 * sizeof(char));
+					fflush(fdd);
+				}
+
+				wn_paths = palloc0(kh_size(hpath) * 24 * sizeof(char));
+				kv_push(char *,indqstr, wn_paths);
+
+				//for debug purpose
+				for (j = kh_begin(hdnp) ; j != kh_end(hdnp) ; j++) {
+					if (kh_exist(hdnp, j) && fdd) {
+						fprintf(fdd, "The path with number : %d in khash(hdnp) is %s\n", j, kh_key(hdnp, j));
+						fflush(fdd);
+					}
+				}
+
+				//eliminate the duplicated nodes
+				print_size = 0;
+				for (j = kh_begin(hpath) ; j != kh_end(hpath) ; j++) {
+					if (kh_exist(hpath, j)) {
+						if (kh_get(dnp, hdnp, kh_key(hpath, j)) == kh_end(hdnp)) {
+							 print_size += sprintf(wn_paths + print_size, "(%lu,\'%s\'),", prewid, kh_key(hpath, j));
+						} else {
+							if (fdd) {
+								fprintf(fdd, "The duplicated way : %ld node path : %s \n", prewid, kh_key(hpath, j));
+								fflush(fdd);
+							}
+						}
+					}
+				}
+
+				if (fdd) {
+					fprintf(fdd, "The way indirectly included nodes are : %s \n", wn_paths);
+					fflush(fdd);
+				}
+
+				qstr_size += print_size;
+
+				//deallocate the strings
+				for (j = kh_begin(hpath) ; j != kh_end(hpath) ; j++) {
+					if (kh_exist(hpath, j)) {
+						//void * anc_path = kh_key(hpath, j);
+						//pfree(anc_path);
+					}
+				}
+
+				//clean up the previous way's nodes lists
+				kh_clear(path, hpath);
+				kh_clear(dnp, hdnp);
+				way_count++;
+			} 
+			//get ancestors of the node and push to hashset
+			get_ancestors(path, hpath);
+			kh_put(dnp, hdnp, path, &rabs);
+			prewid = wid;
+		}
+
+		//codes for the last way
+		if (proc > 0 && kh_size(hpath) > 0) {
+			if (prewid == -1) 
+				prewid = wid;
+			//allocate mem for (way_id, path) condition pair
+			if (fdd) fprintf(fdd, "wn_paths allocated size %ld \n", kh_size(hpath) * 24 * sizeof(char));
+			if (fdd) fflush(fdd);
+			wn_paths = palloc0(kh_size(hpath) * 24 * sizeof(char));
+			kv_push(char *,indqstr, wn_paths);
+
+			//eliminate the duplicated nodes
+			print_size = 0;
+			for (j = kh_begin(hpath) ; j != kh_end(hpath) ; j++) {
+				if (kh_exist(hpath, j)) {
+					if (kh_get(dnp, hdnp, kh_key(hpath, j)) == kh_end(hdnp)) {
+						 print_size += sprintf(wn_paths + print_size, "(%lu,\'%s\'),", prewid, kh_key(hpath, j));
+					} else {
+						if (fdd) {
+							fprintf(fdd, "The duplicated way : %ld node path : %s \n", prewid, kh_key(hpath, j));
+							fflush(fdd);
+						}
+					}
+				}
+			}
+
+			qstr_size += print_size;
+			way_count++;
+		}
+
+		// guard against the empty indirectly nodes
+		if (kv_size(indqstr) == 0) {
+			*inode_num = 0;
+			*inodeids = NULL;
+		} else {
+
+			//catenate all the condition pairs
+			if (fdd) fprintf(fdd, "wn_qstr allocated size %ld \n", (qstr_size + 256) * sizeof(char));
+			if (fdd) fflush(fdd);
+			wn_qstr = palloc0((qstr_size + 256) * sizeof(char));
+
+
+			j = sprintf(wn_qstr, "select distinct node_id from way_trees where (way_id, path) in (");
+			for (i = 0 ; i < kv_size(indqstr) ; i++) {
+				j += sprintf(wn_qstr + j, "%s", kv_A(indqstr, i));
+			}
+
+			wn_qstr[j - 1] = ')';
+
+			if (fdd) {
+				fprintf(fdd, "The indirectly included nodes query string is : %s ; \n", wn_qstr); 
+				fflush(fdd);
+			}
+
+			ret2 = SPI_execute(wn_qstr, true, 0);
+			proc2 = SPI_processed;
+
+			*inode_num = proc2 ;
+
+			if (ret2 > 0 && SPI_tuptable != NULL) {
+				TupleDesc tupdesc = SPI_tuptable->tupdesc;
+				SPITupleTable * tuptable = SPI_tuptable;
+
+				if (fdd) {
+					fprintf(fdd, "the inodeids allocated size %ld\n", proc2*sizeof(long));
+					fprintf(fdd, "the way number of vquery is %d\n", way_count);
+					fflush(fdd);
+				}
+				*inodeids = palloc0(proc2 * sizeof(long));
+				long * retids = *inodeids ;
+				for (i = 0 ; i < proc2 ; i++) {
+					HeapTuple tuple = tuptable->vals[i];
+
+					retids[i] = atol(SPI_getvalue(tuple, tupdesc, 1));
+				}
+
+				//deallocate the memories
+				for (i = 0 ; i < kv_size(indqstr) ; i++) {
+					//void * wid_path_pair_str = kv_A(indqstr, i);
+					//pfree(wid_path_pair_str);
+				}
+
+				for (i = kh_begin(hpath) ; i != kh_end(hpath) ; i++) {
+					if (kh_exist(hpath, i)) {
+						//void * p = kh_key(hpath, i);
+						//pfree(p);
+					}
+				}
+
+				kh_destroy(path, hpath);
+				kh_destroy(dnp, hdnp);
+				kv_destroy(indqstr);
+
+			} else {
+				// here query goes wrong
+			}
+		}
+
+	} else {
+		// here query goes wrong
+
+	}
+
+	if (fdd) fclose(fdd);
+
+	return *inode_num;
 }
