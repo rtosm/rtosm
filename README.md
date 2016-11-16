@@ -44,6 +44,6 @@ select tileid_c(30000);
 
 Following query will select ids of all the nodes the simplified spatial objects need. No matter how large the bbox(x1, y1, x2, y2) size is, the output size of the wquery_c will be reasonable. with the simplified objects' node, you can do analysis or visualization. 
 ```
-select unnest(vwquery_c(bbox.x1, bbox.y1, bbox.x2, bbox.y2, k, e));
+select unnest(vquery_c(bbox.x1, bbox.y1, bbox.x2, bbox.y2, k, e));
 ```
 
