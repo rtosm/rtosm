@@ -1447,6 +1447,13 @@ int get_more_nodes(long * rst, int rst_num, long **inodeids, int * inode_num) {
 	nodeidstr = palloc0(rst_num * 12 * sizeof(char));
 	query_str = palloc0((rst_num * 12 + 256) * sizeof(char));
 
+	//guard the edge case
+	if (rst_num == 0) {
+		*inodeids = NULL;
+		*inode_num = 0;
+		return *inode_num;
+	}
+
 	for (i = 0 ; i < rst_num ; i++) {
 		j += sprintf(nodeidstr + j, "%lu,", rst[i]);
 	}
